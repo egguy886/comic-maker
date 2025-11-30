@@ -30,30 +30,39 @@ def get_api_key():
 
 
 def generate_script(api_key, story_idea):
-    """模块1：让 Gemini 写剧本"""
-    try:
-        genai.configure(api_key=api_key)
+    """模块1：让 Gemini 写剧本 (自动寻找可用模型)"""
+    genai.configure(api_key=api_key)
 
-        # 【修复点】使用更稳定的 gemini-1.5-pro
-        model = genai.GenerativeModel("gemini-1.5-pro", system_instruction=SYSTEM_PROMPT)
-        
-        response = model.generate_content(f"Create a comic script for: {story_idea}")
-        return response.text
+    model_candidates = [
+        "gemini-1.5-flash-002",
+        "gemini-1.5-pro-002",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro-001",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-pro"
+    ]
 
-    except Exception as e:
-        # 自动降级为 Flash 模型
+    last_error = None
+
+    for model_name in model_candidates:
         try:
-            st.warning(f"Pro 模型调用失败，正在尝试 Flash 模型... ({e})")
-            model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=SYSTEM_PROMPT)
+            model = genai.GenerativeModel(model_name, system_instruction=SYSTEM_PROMPT)
             response = model.generate_content(f"Create a comic script for: {story_idea}")
+            st.success(f"✅ 成功连接模型: {model_name}")
             return response.text
-        except Exception as e2:
-            st.error(f"剧本生成彻底失败: {e2}")
-            return None
+        except Exception as e:
+            last_error = e
+            continue
+
+    st.error(f"❌ 所有模型尝试均失败。最后一次报错: {last_error}")
+    return None
 
 
 def extract_prompt(script_text):
     """辅助：从剧本里抠出画画用的提示词"""
+    if not script_text:
+        return None
     if "visual_prompt" in script_text:
         try:
             return script_text.split("visual_prompt")[1].split("```")[0].strip()
@@ -66,7 +75,6 @@ def generate_image_with_gemini(api_key, visual_prompt):
     """模块2：调用 Gemini (Imagen) 画图"""
     try:
         genai.configure(api_key=api_key)
-
         imagen_model = genai.ImageGenerationModel("imagen-3.0-generate-001")
 
         response = imagen_model.generate_images(
@@ -76,7 +84,6 @@ def generate_image_with_gemini(api_key, visual_prompt):
             safety_filter="block_only_high",
         )
         return response.images[0]
-
     except Exception as e:
         st.error(f"绘图失败: {e}。可能是 Key 权限不足或地区限制。")
         return None
@@ -100,13 +107,11 @@ st.set_page_config(page_title="一键连环画神器", layout="wide")
 st.title("🚀 连环画自动生成器 (Web版)")
 st.caption("流程：输入故事 -> Gemini写剧本 -> Gemini画图 -> 自动去水印")
 
-# 获取 API Key
 api_key = get_api_key()
 
 if not api_key:
     st.info("👋 欢迎！请在代码配置中设置 Secrets，或在左侧侧边栏输入 Key 开始使用。")
 
-# 输入框
 user_input = st.text_area("在这个框里输入你的画面/故事想法：", height=100)
 
 if st.button("开始制作", type="primary"):
@@ -116,23 +121,22 @@ if st.button("开始制作", type="primary"):
 
     status = st.status("正在启动流水线...", expanded=True)
 
-    # 1. 写剧本
-    status.write("✍️ 正在构思剧本...")
+    status.write("✍️ 正在尝试连接 Gemini 模型库...")
     script = generate_script(api_key, user_input)
 
     if script:
-        # 2. 提取提示词
+        status.write("📝 剧本已生成！")
+
         prompt = extract_prompt(script)
         if not prompt:
             prompt = user_input
+
         status.write(f"🎨 提取绘图指令: {prompt[:50]}...")
 
-        # 3. 画图
         status.write("🖼️ 正在生成高清图像 (调用 Imagen)...")
         raw_image = generate_image_with_gemini(api_key, prompt)
 
         if raw_image:
-            # 4. 去水印
             status.write("🧼 正在执行去水印修复...")
             final_image = remove_watermark(raw_image)
 
